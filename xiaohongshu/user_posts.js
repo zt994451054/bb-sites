@@ -18,6 +18,12 @@ async function(args) {
 
   const userId = input.match(/user\/profile\/([a-z0-9]+)/)?.[1] || input;
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const noteIdToTime = (noteId) => {
+    const hex = String(noteId || '').slice(0, 8);
+    if (!/^[0-9a-f]{8}$/i.test(hex)) return null;
+    const seconds = Number.parseInt(hex, 16);
+    return Number.isFinite(seconds) ? seconds * 1000 : null;
+  };
   const flattenNotes = (pages) => {
     if (!Array.isArray(pages)) return [];
     const flattened = [];
@@ -26,6 +32,17 @@ async function(args) {
       flattened.push(...page);
     }
     return flattened;
+  };
+  const uniqueNotes = (items) => {
+    const seen = new Set();
+    const notes = [];
+    for (const item of items) {
+      const noteId = item?.id || item?.noteCard?.noteId || item?.note_card?.note_id;
+      if (!noteId || seen.has(noteId)) continue;
+      seen.add(noteId);
+      notes.push(item);
+    }
+    return notes;
   };
 
   const iframe = document.createElement('iframe');
@@ -39,26 +56,34 @@ async function(args) {
       const app = iframe.contentDocument?.querySelector('#app')?.__vue_app__;
       const pinia = app?.config?.globalProperties?.$pinia;
       const userStore = pinia?._s?.get('user');
-      const rawNotes = flattenNotes(userStore?.notes);
+      const rawNotes = uniqueNotes(flattenNotes(userStore?.notes));
       const hasUserPageData = !!(userStore?.userPageData && Object.keys(userStore.userPageData).length > 0);
       const isReady = userStore?.visitTargetUserId === userId && (rawNotes.length > 0 || hasUserPageData);
       if (isReady) {
-        const notes = rawNotes.map(item => ({
-          note_id: item.id,
-          xsec_token: item.xsecToken || item.xsec_token,
-          title: item.noteCard?.displayTitle || item.note_card?.display_title,
-          type: item.noteCard?.type || item.note_card?.type,
-          url: 'https://www.xiaohongshu.com/explore/' + item.id,
-          author: item.noteCard?.user?.nickName || item.noteCard?.user?.nickname || item.note_card?.user?.nickname,
-          author_id: item.noteCard?.user?.userId || item.noteCard?.user?.user_id || item.note_card?.user?.user_id,
-          likes: item.noteCard?.interactInfo?.likedCount || item.noteCard?.interact_info?.liked_count || item.note_card?.interact_info?.liked_count,
-          time: item.noteCard?.time || item.noteCard?.publishTime || item.note_card?.time || null
-        }));
+        const noteQuery = Array.isArray(userStore?.noteQueries)
+          ? userStore.noteQueries.find(query => query?.userId === userId)
+          : null;
+        const notes = rawNotes.map(item => {
+          const noteCard = item.noteCard || item.note_card || {};
+          const noteId = item.id || noteCard.noteId || noteCard.note_id;
+          return {
+            note_id: noteId,
+            xsec_token: item.xsecToken || item.xsec_token || noteCard.xsecToken || noteCard.xsec_token,
+            title: noteCard.displayTitle || noteCard.display_title,
+            type: noteCard.type,
+            url: 'https://www.xiaohongshu.com/explore/' + noteId,
+            author: noteCard.user?.nickName || noteCard.user?.nickname,
+            author_id: noteCard.user?.userId || noteCard.user?.user_id,
+            likes: noteCard.interactInfo?.likedCount || noteCard.interact_info?.liked_count,
+            // User profile cards omit publish timestamps, so fall back to the note id's embedded creation time.
+            time: noteCard.time || noteCard.publishTime || noteCard.createTime || item.time || item.publishTime || item.createTime || item.lastUpdateTime || item.last_update_time || noteIdToTime(noteId)
+          };
+        });
 
         return {
           user_id: userId,
           count: notes.length,
-          has_more: notes.length >= 30,
+          has_more: typeof noteQuery?.hasMore === 'boolean' ? noteQuery.hasMore : notes.length >= 30,
           notes
         };
       }

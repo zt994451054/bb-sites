@@ -10,43 +10,70 @@
 */
 
 async function(args) {
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const iframe = document.createElement('iframe');
-  iframe.style.display = 'none';
-  iframe.src = '/explore?bb_feed_probe=' + Date.now();
-  document.body.appendChild(iframe);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const app = document.querySelector('#app')?.__vue_app__;
+  const pinia = app?.config?.globalProperties?.$pinia;
+  if (!pinia?._s) {
+    return {error: 'Page not ready', hint: 'Open xiaohongshu.com and wait for page to finish loading'};
+  }
+
+  const feedStore = pinia._s.get('feed');
+  if (!feedStore) {
+    return {error: 'Feed store not found', hint: 'Ensure xiaohongshu.com is fully loaded'};
+  }
+
+  const normalizeNotes = (items) => {
+    if (!Array.isArray(items)) return [];
+    const seen = new Set();
+    const notes = [];
+    for (const item of items) {
+      const noteCard = item?.noteCard || item?.note_card;
+      const noteId = item?.id || noteCard?.noteId || noteCard?.note_id;
+      const modelType = item?.modelType || item?.model_type;
+      if (!noteCard || !noteId || (modelType && modelType !== 'note') || seen.has(noteId)) continue;
+      seen.add(noteId);
+      notes.push({
+        id: noteId,
+        xsec_token: item?.xsecToken || item?.xsec_token || noteCard?.xsecToken || noteCard?.xsec_token,
+        title: noteCard?.displayTitle || noteCard?.display_title,
+        type: noteCard?.type,
+        url: 'https://www.xiaohongshu.com/explore/' + noteId,
+        author: noteCard?.user?.nickName || noteCard?.user?.nickname,
+        author_id: noteCard?.user?.userId || noteCard?.user?.user_id,
+        likes: noteCard?.interactInfo?.likedCount || noteCard?.interact_info?.liked_count
+      });
+    }
+    return notes;
+  };
+
+  const readFeed = () => {
+    const notes = normalizeNotes(feedStore?.feeds);
+    if (!notes.length) return null;
+    return {
+      count: notes.length,
+      has_more: typeof feedStore?.hasMore === 'boolean' ? feedStore.hasMore : !!feedStore?.cursorScore || notes.length > 0,
+      notes
+    };
+  };
+
+  const cached = readFeed();
+  if (cached) return cached;
 
   try {
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const app = iframe.contentDocument?.querySelector('#app')?.__vue_app__;
-      const pinia = app?.config?.globalProperties?.$pinia;
-      const feedStore = pinia?._s?.get('feed');
-      const feeds = Array.isArray(feedStore?.feeds) ? feedStore.feeds : null;
-      if (feedStore && feeds && feeds.length > 0) {
-        const notes = feeds.map(item => ({
-          id: item.id,
-          xsec_token: item.xsecToken || item.xsec_token,
-          title: item.noteCard?.displayTitle || item.note_card?.display_title,
-          type: item.noteCard?.type || item.note_card?.type,
-          url: 'https://www.xiaohongshu.com/explore/' + item.id,
-          author: item.noteCard?.user?.nickName || item.noteCard?.user?.nickname || item.note_card?.user?.nickname,
-          author_id: item.noteCard?.user?.userId || item.noteCard?.user?.user_id || item.note_card?.user?.user_id,
-          likes: item.noteCard?.interactInfo?.likedCount || item.noteCard?.interact_info?.liked_count || item.note_card?.interact_info?.liked_count
-        }));
-
-        return {
-          count: notes.length,
-          has_more: notes.length > 0,
-          notes
-        };
-      }
-
-      await sleep(400);
+    if (typeof feedStore.fetchFeeds === 'function') {
+      await Promise.race([
+        Promise.resolve(feedStore.fetchFeeds()),
+        sleep(2500)
+      ]);
     }
+  } catch {}
 
-    return {error: 'Feed page did not finish loading', hint: 'Ensure xiaohongshu.com is fully loaded'};
-  } finally {
-    iframe.remove();
+  const deadline = Date.now() + 12_000;
+  while (Date.now() < deadline) {
+    const result = readFeed();
+    if (result) return result;
+    await sleep(300);
   }
+
+  return {error: 'Feed data did not finish loading', hint: 'Retry while logged in to xiaohongshu.com'};
 }
